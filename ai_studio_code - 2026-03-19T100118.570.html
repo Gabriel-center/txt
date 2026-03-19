@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>P2P Text Sharer</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin: 0; background-color: #f4f4f4; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        .container { width: 95%; max-width: 500px; background: white; padding: 25px; border-radius: 10px; box-shadow: 0 0 20px rgba(0,0,0,0.1); }
+        h1 { text-align: center; margin-top: 0; color: #333; }
+        #host-view, #client-view, #chat-view { display: none; }
+        #host-view h2, #client-view h2 { text-align: center; color: #555; }
+        #peer-id-display { font-weight: bold; font-size: 1.5em; text-align: center; margin-bottom: 15px; color: #007bff; letter-spacing: 2px; cursor: pointer; }
+        #qrcode { display: flex; justify-content: center; margin-bottom: 15px; }
+        textarea, input, button { width: 100%; padding: 10px; margin-bottom: 10px; border-radius: 5px; border: 1px solid #ddd; box-sizing: border-box; font-size: 1em; }
+        button { background-color: #007bff; color: white; border: none; cursor: pointer; transition: background-color 0.2s; }
+        button:hover { background-color: #0056b3; }
+        #chat-log { height: 200px; background-color: #f9f9f9; border: 1px solid #ddd; border-radius: 5px; padding: 10px; overflow-y: auto; margin-bottom: 10px; white-space: pre-wrap; }
+        .status { text-align: center; color: #888; margin-top: 15px; }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>P2P Text Sharer</h1>
+
+        <!-- Host View: Shown on desktop to display code -->
+        <div id="host-view">
+            <h2>Scan QR or Enter Code on Phone</h2>
+            <div id="peer-id-display" title="Click to copy">LOADING...</div>
+            <div id="qrcode"></div>
+            <p class="status">Waiting for a connection...</p>
+        </div>
+
+        <!-- Client View: Shown on mobile to enter code -->
+        <div id="client-view">
+            <h2>Enter 5-Letter Code from Computer</h2>
+            <input type="text" id="connect-id-input" placeholder="e.g., aBcDe">
+            <button id="connect-btn">Connect</button>
+        </div>
+
+        <!-- Chat View: Shown on both once connected -->
+        <div id="chat-view">
+            <div id="chat-log"></div>
+            <textarea id="message-input" placeholder="Type message..."></textarea>
+            <button id="send-btn">Send</button>
+            <p class="status" id="connection-status">Connected</p>
+        </div>
+    </div>
+
+    <!-- Include Libraries -->
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+
+    <script>
+        // --- DOM Elements ---
+        const hostView = document.getElementById('host-view');
+        const clientView = document.getElementById('client-view');
+        const chatView = document.getElementById('chat-view');
+        const peerIdDisplay = document.getElementById('peer-id-display');
+        const qrcodeContainer = document.getElementById('qrcode');
+        const connectIdInput = document.getElementById('connect-id-input');
+        const connectBtn = document.getElementById('connect-btn');
+        const chatLog = document.getElementById('chat-log');
+        const messageInput = document.getElementById('message-input');
+        const sendBtn = document.getElementById('send-btn');
+        const connectionStatus = document.getElementById('connection-status');
+
+        let peer;
+        let conn;
+
+        // --- Utility to generate a 5-letter code ---
+        function generateRandomCode(length = 5) {
+            const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+            let result = '';
+            for (let i = 0; i < length; i++) {
+                result += chars.charAt(Math.floor(Math.random() * chars.length));
+            }
+            return result;
+        }
+
+        const peerId = generateRandomCode();
+
+        // --- Initialize PeerJS ---
+        // We use our own 5-letter code for a friendlier experience.
+        peer = new Peer(peerId, {
+            // For a public app, you might want to host your own PeerJS server.
+            // For this demo, the public one is fine.
+        });
+
+        // --- Event Listeners ---
+        peer.on('open', (id) => {
+            // Logic to decide if we are a host or a client
+            const urlParams = new URLSearchParams(window.location.search);
+            const connectTo = urlParams.get('connect');
+
+            if (connectTo) {
+                // We are a CLIENT because we have a 'connect' URL parameter
+                showView('client-view');
+                connectIdInput.value = connectTo;
+                connectToPeer(connectTo);
+            } else {
+                // We are the HOST
+                showView('host-view');
+                peerIdDisplay.textContent = id;
+                const shareUrl = `${window.location.href}?connect=${id}`;
+                new QRCode(qrcodeContainer, {
+                    text: shareUrl,
+                    width: 128,
+                    height: 128,
+                });
+            }
+        });
+
+        peer.on('connection', (connection) => {
+            // This runs on the HOST when a client connects
+            conn = connection;
+            setupConnectionEvents();
+        });
+
+        peer.on('error', (err) => {
+            alert('An error occurred: ' + err);
+        });
+
+        connectBtn.addEventListener('click', () => {
+            const connectToId = connectIdInput.value.trim();
+            if (connectToId) {
+                connectToPeer(connectToId);
+            }
+        });
+        
+        sendBtn.addEventListener('click', sendMessage);
+        messageInput.addEventListener('keyup', (event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                sendMessage();
+            }
+        });
+
+        peerIdDisplay.addEventListener('click', () => {
+            navigator.clipboard.writeText(peerIdDisplay.textContent).then(() => {
+                alert('ID Copied!');
+            });
+        });
+
+        // --- Core Functions ---
+        function connectToPeer(targetId) {
+            // This runs on the CLIENT to initiate the connection
+            conn = peer.connect(targetId);
+            setupConnectionEvents();
+        }
+        
+        function setupConnectionEvents() {
+            conn.on('open', () => {
+                showView('chat-view');
+                connectionStatus.textContent = `Connected to ${conn.peer}`;
+            });
+
+            conn.on('data', (data) => {
+                appendLog(`Received: ${data}`);
+            });
+
+            conn.on('close', () => {
+                connectionStatus.textContent = 'Connection closed.';
+                alert('The connection has been closed.');
+                showView('client-view');
+            });
+        }
+        
+        function sendMessage() {
+            const message = messageInput.value;
+            if (message.trim() === '' || !conn) return;
+            conn.send(message);
+            appendLog(`You: ${message}`);
+            messageInput.value = '';
+        }
+
+        function appendLog(text) {
+            chatLog.textContent += text + '\n';
+            chatLog.scrollTop = chatLog.scrollHeight; // Auto-scroll to bottom
+        }
+
+        function showView(viewId) {
+            hostView.style.display = 'none';
+            clientView.style.display = 'none';
+            chatView.style.display = 'none';
+            document.getElementById(viewId).style.display = 'block';
+        }
+    </script>
+</body>
+</html>
