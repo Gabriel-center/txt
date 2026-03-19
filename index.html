@@ -27,217 +27,112 @@
 
     <div class="container">
         <h1>P2P Text & File Sharer</h1>
-
-        <!-- Host View -->
-        <div id="host-view">
-            <h2>Scan QR or Enter Code on Phone</h2>
-            <div id="peer-id-display" title="Click to copy">LOADING...</div>
-            <div id="qrcode"></div>
-            <p class="status">Waiting for a connection...</p>
-        </div>
-
-        <!-- Client View -->
-        <div id="client-view">
-            <h2>Enter 5-Letter Code from Computer</h2>
-            <input type="text" id="connect-id-input" placeholder="e.g., aBcDe">
-            <button id="connect-btn">Connect</button>
-        </div>
-
-        <!-- Chat & File View -->
-        <div id="chat-view">
-            <div id="chat-log"></div>
-            <textarea id="message-input" placeholder="Type message..."></textarea>
-            <button id="send-btn">Send Text</button>
-            <hr>
-            <input type="file" id="file-input">
-            <button id="send-file-btn">Send File</button>
-            <div class="progress-container" id="progress-container">
-                <p id="progress-label">Sending file...</p>
-                <progress id="progress-bar" value="0" max="100"></progress>
-            </div>
-            <p class="status" id="connection-status">Connected</p>
-        </div>
+        <div id="host-view"><h2>Scan QR or Enter Code</h2><div id="peer-id-display" title="Click to copy">LOADING...</div><div id="qrcode"></div><p class="status">Waiting for a connection...</p></div>
+        <div id="client-view"><h2>Enter 5-Letter Code</h2><input type="text" id="connect-id-input" placeholder="e.g., aBcDe"><button id="connect-btn">Connect</button></div>
+        <div id="chat-view"><div id="chat-log"></div><textarea id="message-input" placeholder="Type message..."></textarea><button id="send-btn">Send Text</button><hr><input type="file" id="file-input"><button id="send-file-btn">Send File</button><div class="progress-container" id="progress-container"><p id="progress-label">Sending file...</p><progress id="progress-bar" value="0" max="100"></progress></div><p class="status" id="connection-status">Connected</p></div>
     </div>
 
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
 
     <script>
-        const hostView = document.getElementById('host-view');
-        const clientView = document.getElementById('client-view');
-        const chatView = document.getElementById('chat-view');
-        const peerIdDisplay = document.getElementById('peer-id-display');
-        const qrcodeContainer = document.getElementById('qrcode');
-        const connectIdInput = document.getElementById('connect-id-input');
-        const connectBtn = document.getElementById('connect-btn');
-        const chatLog = document.getElementById('chat-log');
-        const messageInput = document.getElementById('message-input');
-        const sendBtn = document.getElementById('send-btn');
-        const connectionStatus = document.getElementById('connection-status');
-        const fileInput = document.getElementById('file-input');
-        const sendFileBtn = document.getElementById('send-file-btn');
-        const progressContainer = document.getElementById('progress-container');
-        const progressLabel = document.getElementById('progress-label');
-        const progressBar = document.getElementById('progress-bar');
+        const hostView = document.getElementById('host-view'), clientView = document.getElementById('client-view'), chatView = document.getElementById('chat-view'), peerIdDisplay = document.getElementById('peer-id-display'), qrcodeContainer = document.getElementById('qrcode'), connectIdInput = document.getElementById('connect-id-input'), connectBtn = document.getElementById('connect-btn'), chatLog = document.getElementById('chat-log'), messageInput = document.getElementById('message-input'), sendBtn = document.getElementById('send-btn'), connectionStatus = document.getElementById('connection-status'), fileInput = document.getElementById('file-input'), sendFileBtn = document.getElementById('send-file-btn'), progressContainer = document.getElementById('progress-container'), progressLabel = document.getElementById('progress-label'), progressBar = document.getElementById('progress-bar');
+        let peer, conn, fileBuffer = [], fileMetadata = {}, receivedSize = 0;
+        const CHUNK_SIZE = 65536; // Increased chunk size for Base64 efficiency
 
-        let peer;
-        let conn;
-        const CHUNK_SIZE = 16384; 
-        let fileBuffer = [];
-        let fileMetadata = {};
-        let receivedSize = 0;
-        
-        function generateRandomCode(length = 5) {
-            const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-            let result = '';
-            for (let i = 0; i < length; i++) {
-                result += chars.charAt(Math.floor(Math.random() * chars.length));
+        // --- NEW: Base64 Helper Functions ---
+        function arrayBufferToBase64(buffer) {
+            let binary = '';
+            const bytes = new Uint8Array(buffer);
+            const len = bytes.byteLength;
+            for (let i = 0; i < len; i++) {
+                binary += String.fromCharCode(bytes[i]);
             }
-            return result;
+            return window.btoa(binary);
         }
 
-        const peerId = generateRandomCode();
-        peer = new Peer(peerId, {});
-
-        peer.on('open', (id) => {
-            const urlParams = new URLSearchParams(window.location.search);
-            const connectTo = urlParams.get('connect');
-            if (connectTo) {
-                showView('client-view');
-                connectIdInput.value = connectTo;
-                connectToPeer(connectTo);
-            } else {
-                showView('host-view');
-                peerIdDisplay.textContent = id;
-                const shareUrl = `${window.location.href}?connect=${id}`;
-                new QRCode(qrcodeContainer, { text: shareUrl, width: 128, height: 128 });
+        function base64ToUint8Array(base64) {
+            const binary_string = window.atob(base64);
+            const len = binary_string.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+                bytes[i] = binary_string.charCodeAt(i);
             }
-        });
+            return bytes;
+        }
 
-        peer.on('connection', (connection) => {
-            conn = connection;
-            setupConnectionEvents();
+        // --- Standard Setup ---
+        const peerId = (() => { const c = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'; let r = ''; for(let i=0; i<5; i++) r+=c[Math.floor(Math.random()*c.length)]; return r; })();
+        peer = new Peer(peerId, {});
+        peer.on('open', id => {
+            const params = new URLSearchParams(window.location.search), connectTo = params.get('connect');
+            if (connectTo) { showView('client-view'); connectIdInput.value = connectTo; connectToPeer(connectTo); } 
+            else { showView('host-view'); peerIdDisplay.textContent = id; new QRCode(qrcodeContainer, `${window.location.href}?connect=${id}`); }
         });
-
-        peer.on('error', (err) => alert('An error occurred: ' + err));
-
-        connectBtn.addEventListener('click', () => {
-            const connectToId = connectIdInput.value.trim();
-            if (connectToId) connectToPeer(connectToId);
-        });
-        
+        peer.on('connection', c => { conn = c; setupConnectionEvents(); });
+        peer.on('error', err => alert('An error occurred: ' + err));
+        connectBtn.addEventListener('click', () => connectToPeer(connectIdInput.value.trim()));
         sendBtn.addEventListener('click', sendMessage);
-        messageInput.addEventListener('keyup', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) sendMessage();
-        });
-
+        
+        // --- UPDATED: File Sending Logic with Base64 ---
         sendFileBtn.addEventListener('click', () => {
             const file = fileInput.files[0];
-            if (!file) {
-                alert('Please select a file first.');
-                return;
-            }
-            const metadata = { name: file.name, size: file.size, type: file.type };
-            conn.send({ type: 'metadata', payload: metadata });
+            if (!file) return alert('Please select a file.');
+            conn.send({ type: 'metadata', payload: { name: file.name, size: file.size, type: file.type } });
             
             let offset = 0;
             const reader = new FileReader();
-            reader.onload = (event) => {
-                if (!event.target.error) {
-                    conn.send(event.target.result); 
-                    offset += event.target.result.byteLength;
-                    updateProgress(offset, file.size, `Sending ${file.name}...`);
-                    if (offset < file.size) {
-                        readSlice(offset);
-                    } else {
-                         appendLog(`File "${file.name}" sent successfully.`);
-                    }
-                } else {
-                    console.error("File Read Error: ", event.target.error);
-                }
+            reader.onload = e => {
+                const base64Chunk = arrayBufferToBase64(e.target.result);
+                conn.send({ type: 'chunk', payload: base64Chunk });
+                offset += e.target.result.byteLength;
+                updateProgress(offset, file.size, `Sending ${file.name}...`);
+                if (offset < file.size) readSlice(offset);
+                else appendLog(`File "${file.name}" sent successfully.`);
             };
-            const readSlice = (o) => {
-                const slice = file.slice(o, o + CHUNK_SIZE);
-                reader.readAsArrayBuffer(slice);
-            };
+            const readSlice = o => reader.readAsArrayBuffer(file.slice(o, o + CHUNK_SIZE));
             readSlice(0);
         });
 
-        function connectToPeer(targetId) {
-            // FIX: Explicitly set serialization to 'binary' for proper file handling
-            conn = peer.connect(targetId, { serialization: 'binary' });
-            setupConnectionEvents();
-        }
+        function connectToPeer(id) { if (id) { conn = peer.connect(id); setupConnectionEvents(); } }
         
         function setupConnectionEvents() {
-            conn.on('open', () => {
-                showView('chat-view');
-                connectionStatus.textContent = `Connected to ${conn.peer}`;
-            });
+            conn.on('open', () => { showView('chat-view'); connectionStatus.textContent = `Connected to ${conn.peer}`; });
+            conn.on('close', () => { alert('Connection closed.'); showView('client-view'); });
 
-            conn.on('data', (data) => {
-                if (data instanceof ArrayBuffer) {
-                    fileBuffer.push(data);
-                    receivedSize += data.byteLength;
-                    updateProgress(receivedSize, fileMetadata.size, `Receiving ${fileMetadata.name}...`);
-                    if (receivedSize === fileMetadata.size) {
-                        const completeFile = new Blob(fileBuffer, { type: fileMetadata.type });
-                        downloadFile(completeFile, fileMetadata.name);
+            // --- UPDATED: Data Receiving Logic with Base64 ---
+            conn.on('data', data => {
+                switch (data.type) {
+                    case 'metadata':
+                        fileMetadata = data.payload;
                         fileBuffer = [];
                         receivedSize = 0;
-                        progressContainer.style.display = 'none';
-                    }
-                } else if (typeof data === 'object' && data.type === 'metadata') {
-                    fileMetadata = data.payload;
-                    appendLog(`Incoming file: ${fileMetadata.name} (${(fileMetadata.size / 1024 / 1024).toFixed(2)} MB)`);
-                } else {
-                    appendLog(`Received: ${data}`);
-                }
-            });
+                        appendLog(`Incoming file: ${fileMetadata.name} (${(fileMetadata.size / 1024 / 1024).toFixed(2)} MB)`);
+                        break;
+                    case 'chunk':
+                        const chunk = base64ToUint8Array(data.payload);
+                        fileBuffer.push(chunk);
+                        receivedSize += chunk.byteLength;
+                        updateProgress(receivedSize, fileMetadata.size, `Receiving ${fileMetadata.name}...`);
 
-            conn.on('close', () => {
-                alert('Connection closed.');
-                showView('client-view');
+                        if (receivedSize === fileMetadata.size) {
+                            const file = new Blob(fileBuffer, { type: fileMetadata.type });
+                            downloadFile(file, fileMetadata.name);
+                            progressContainer.style.display = 'none';
+                        }
+                        break;
+                    default: // It's a simple text message
+                        appendLog(`Received: ${data}`);
+                        break;
+                }
             });
         }
         
-        function sendMessage() {
-            const message = messageInput.value;
-            if (message.trim() === '' || !conn) return;
-            conn.send(message);
-            appendLog(`You: ${message}`);
-            messageInput.value = '';
-        }
-
-        function downloadFile(blob, name) {
-            const link = document.createElement('a');
-            link.href = URL.createObjectURL(blob);
-            link.download = name;
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            URL.revokeObjectURL(link.href);
-            appendLog(`File "${name}" downloaded.`);
-        }
-
-        function updateProgress(value, max, label) {
-            progressContainer.style.display = 'block';
-            progressLabel.textContent = label;
-            progressBar.max = max;
-            progressBar.value = value;
-        }
-
-        function appendLog(text) {
-            chatLog.textContent += text + '\n';
-            chatLog.scrollTop = chatLog.scrollHeight;
-        }
-
-        function showView(viewId) {
-            hostView.style.display = 'none';
-            clientView.style.display = 'none';
-            chatView.style.display = 'none';
-            document.getElementById(viewId).style.display = 'block';
-        }
+        function sendMessage() { const msg = messageInput.value; if(msg.trim()==='' || !conn) return; conn.send(msg); appendLog(`You: ${msg}`); messageInput.value=''; }
+        function downloadFile(blob, name) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(a.href); appendLog(`File "${name}" downloaded.`); }
+        function updateProgress(val, max, label) { progressContainer.style.display = 'block'; progressLabel.textContent = label; progressBar.max = max; progressBar.value = val; }
+        function appendLog(text) { chatLog.textContent += text + '\n'; chatLog.scrollTop = chatLog.scrollHeight; }
+        function showView(view) { ['host-view','client-view','chat-view'].forEach(v => document.getElementById(v).style.display = (v === view) ? 'block' : 'none'); }
     </script>
 </body>
 </html>
