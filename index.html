@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>P2P Text Sharer</title>
+    <title>P2P Text & File Sharer</title>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin: 0; background-color: #f4f4f4; display: flex; justify-content: center; align-items: center; height: 100vh; }
         .container { width: 95%; max-width: 500px; background: white; padding: 25px; border-radius: 10px; box-shadow: 0 0 20px rgba(0,0,0,0.1); }
@@ -15,16 +15,21 @@
         textarea, input, button { width: 100%; padding: 10px; margin-bottom: 10px; border-radius: 5px; border: 1px solid #ddd; box-sizing: border-box; font-size: 1em; }
         button { background-color: #007bff; color: white; border: none; cursor: pointer; transition: background-color 0.2s; }
         button:hover { background-color: #0056b3; }
+        #send-file-btn { background-color: #28a745; }
+        #send-file-btn:hover { background-color: #218838; }
         #chat-log { height: 200px; background-color: #f9f9f9; border: 1px solid #ddd; border-radius: 5px; padding: 10px; overflow-y: auto; margin-bottom: 10px; white-space: pre-wrap; }
         .status { text-align: center; color: #888; margin-top: 15px; }
+        /* --- New styles for progress bar --- */
+        progress { width: 100%; height: 20px; }
+        .progress-container { display: none; margin-top: 15px; }
     </style>
 </head>
 <body>
 
     <div class="container">
-        <h1>P2P Text Sharer</h1>
+        <h1>P2P Text & File Sharer</h1>
 
-        <!-- Host View: Shown on desktop to display code -->
+        <!-- Host View -->
         <div id="host-view">
             <h2>Scan QR or Enter Code on Phone</h2>
             <div id="peer-id-display" title="Click to copy">LOADING...</div>
@@ -32,18 +37,26 @@
             <p class="status">Waiting for a connection...</p>
         </div>
 
-        <!-- Client View: Shown on mobile to enter code -->
+        <!-- Client View -->
         <div id="client-view">
             <h2>Enter 5-Letter Code from Computer</h2>
             <input type="text" id="connect-id-input" placeholder="e.g., aBcDe">
             <button id="connect-btn">Connect</button>
         </div>
 
-        <!-- Chat View: Shown on both once connected -->
+        <!-- Chat & File View -->
         <div id="chat-view">
             <div id="chat-log"></div>
             <textarea id="message-input" placeholder="Type message..."></textarea>
-            <button id="send-btn">Send</button>
+            <button id="send-btn">Send Text</button>
+            <hr>
+            <input type="file" id="file-input">
+            <button id="send-file-btn">Send File</button>
+            <!-- New Progress Bar Section -->
+            <div class="progress-container" id="progress-container">
+                <p id="progress-label">Sending file...</p>
+                <progress id="progress-bar" value="0" max="100"></progress>
+            </div>
             <p class="status" id="connection-status">Connected</p>
         </div>
     </div>
@@ -65,11 +78,23 @@
         const messageInput = document.getElementById('message-input');
         const sendBtn = document.getElementById('send-btn');
         const connectionStatus = document.getElementById('connection-status');
+        // --- New File Sharing Elements ---
+        const fileInput = document.getElementById('file-input');
+        const sendFileBtn = document.getElementById('send-file-btn');
+        const progressContainer = document.getElementById('progress-container');
+        const progressLabel = document.getElementById('progress-label');
+        const progressBar = document.getElementById('progress-bar');
+
 
         let peer;
         let conn;
+        const CHUNK_SIZE = 16384; // 16KB chunk size, a standard size
 
-        // --- Utility to generate a 5-letter code ---
+        // --- File receiver variables ---
+        let fileBuffer = [];
+        let fileMetadata = {};
+        let receivedSize = 0;
+        
         function generateRandomCode(length = 5) {
             const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
             let result = '';
@@ -80,71 +105,87 @@
         }
 
         const peerId = generateRandomCode();
+        peer = new Peer(peerId, {});
 
-        // --- Initialize PeerJS ---
-        // We use our own 5-letter code for a friendlier experience.
-        peer = new Peer(peerId, {
-            // For a public app, you might want to host your own PeerJS server.
-            // For this demo, the public one is fine.
-        });
-
-        // --- Event Listeners ---
+        // --- PEERJS EVENT LISTENERS ---
         peer.on('open', (id) => {
-            // Logic to decide if we are a host or a client
             const urlParams = new URLSearchParams(window.location.search);
             const connectTo = urlParams.get('connect');
-
             if (connectTo) {
-                // We are a CLIENT because we have a 'connect' URL parameter
                 showView('client-view');
                 connectIdInput.value = connectTo;
                 connectToPeer(connectTo);
             } else {
-                // We are the HOST
                 showView('host-view');
                 peerIdDisplay.textContent = id;
                 const shareUrl = `${window.location.href}?connect=${id}`;
-                new QRCode(qrcodeContainer, {
-                    text: shareUrl,
-                    width: 128,
-                    height: 128,
-                });
+                new QRCode(qrcodeContainer, { text: shareUrl, width: 128, height: 128 });
             }
         });
 
         peer.on('connection', (connection) => {
-            // This runs on the HOST when a client connects
             conn = connection;
             setupConnectionEvents();
         });
 
-        peer.on('error', (err) => {
-            alert('An error occurred: ' + err);
-        });
+        peer.on('error', (err) => alert('An error occurred: ' + err));
 
+        // --- UI EVENT LISTENERS ---
         connectBtn.addEventListener('click', () => {
             const connectToId = connectIdInput.value.trim();
-            if (connectToId) {
-                connectToPeer(connectToId);
-            }
+            if (connectToId) connectToPeer(connectToId);
         });
         
         sendBtn.addEventListener('click', sendMessage);
-        messageInput.addEventListener('keyup', (event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
-                sendMessage();
+        messageInput.addEventListener('keyup', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) sendMessage();
+        });
+
+        // --- New File Send Logic ---
+        sendFileBtn.addEventListener('click', () => {
+            const file = fileInput.files[0];
+            if (!file) {
+                alert('Please select a file first.');
+                return;
             }
+
+            // 1. Send metadata first
+            const metadata = { name: file.name, size: file.size, type: file.type };
+            conn.send({ type: 'metadata', payload: metadata });
+            
+            // 2. Start chunking and sending the file
+            let offset = 0;
+            const reader = new FileReader();
+
+            reader.onload = (event) => {
+                if (!event.target.error) {
+                    conn.send(event.target.result); // Send the chunk
+                    offset += event.target.result.byteLength;
+                    
+                    // Update progress on sender side
+                    updateProgress(offset, file.size, `Sending ${file.name}...`);
+                    
+                    if (offset < file.size) {
+                        readSlice(offset); // Read the next slice
+                    } else {
+                         appendLog(`File "${file.name}" sent successfully.`);
+                    }
+                } else {
+                    console.error("File Read Error: ", event.target.error);
+                }
+            };
+            
+            const readSlice = (o) => {
+                const slice = file.slice(o, o + CHUNK_SIZE);
+                reader.readAsArrayBuffer(slice);
+            };
+
+            readSlice(0); // Start the process
         });
 
-        peerIdDisplay.addEventListener('click', () => {
-            navigator.clipboard.writeText(peerIdDisplay.textContent).then(() => {
-                alert('ID Copied!');
-            });
-        });
 
-        // --- Core Functions ---
+        // --- CORE FUNCTIONS ---
         function connectToPeer(targetId) {
-            // This runs on the CLIENT to initiate the connection
             conn = peer.connect(targetId);
             setupConnectionEvents();
         }
@@ -155,13 +196,38 @@
                 connectionStatus.textContent = `Connected to ${conn.peer}`;
             });
 
+            // --- Updated Data Handler for Text and Files ---
             conn.on('data', (data) => {
-                appendLog(`Received: ${data}`);
+                // Check if the data is binary file chunk or a text/metadata message
+                if (data instanceof ArrayBuffer) {
+                    // This is a file chunk
+                    fileBuffer.push(data);
+                    receivedSize += data.byteLength;
+                    
+                    updateProgress(receivedSize, fileMetadata.size, `Receiving ${fileMetadata.name}...`);
+
+                    if (receivedSize === fileMetadata.size) {
+                        // File transfer is complete
+                        const completeFile = new Blob(fileBuffer, { type: fileMetadata.type });
+                        downloadFile(completeFile, fileMetadata.name);
+
+                        // Reset for next file
+                        fileBuffer = [];
+                        receivedSize = 0;
+                        progressContainer.style.display = 'none';
+                    }
+                } else if (typeof data === 'object' && data.type === 'metadata') {
+                    // This is file metadata
+                    fileMetadata = data.payload;
+                    appendLog(`Incoming file: ${fileMetadata.name} (${(fileMetadata.size / 1024 / 1024).toFixed(2)} MB)`);
+                } else {
+                    // This is a regular text message
+                    appendLog(`Received: ${data}`);
+                }
             });
 
             conn.on('close', () => {
-                connectionStatus.textContent = 'Connection closed.';
-                alert('The connection has been closed.');
+                alert('Connection closed.');
                 showView('client-view');
             });
         }
@@ -174,9 +240,27 @@
             messageInput.value = '';
         }
 
+        function downloadFile(blob, name) {
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = name;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(link.href); // Clean up
+            appendLog(`File "${name}" downloaded.`);
+        }
+
+        function updateProgress(value, max, label) {
+            progressContainer.style.display = 'block';
+            progressLabel.textContent = label;
+            progressBar.max = max;
+            progressBar.value = value;
+        }
+
         function appendLog(text) {
             chatLog.textContent += text + '\n';
-            chatLog.scrollTop = chatLog.scrollHeight; // Auto-scroll to bottom
+            chatLog.scrollTop = chatLog.scrollHeight;
         }
 
         function showView(viewId) {
